@@ -1,0 +1,75 @@
+name: Build luci-app-xray (OpenWrt SDK)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download and extract OpenWrt SDK (23.05.5 x86_64)
+      run: |
+        SDK_URL="https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-11.3.0_musl.Linux-x86_64.tar.xz"
+        mkdir -p sdk
+        echo "Downloading SDK..."
+        curl -fsSL "$SDK_URL" -o sdk/sdk.tar.xz
+        echo "Extracting SDK..."
+        tar -C sdk -xf sdk/sdk.tar.xz --strip-components=1
+        rm sdk/sdk.tar.xz
+
+    - name: Place package into SDK (copy repo as package/luci-app-xray)
+      run: |
+        mkdir -p sdk/package
+        # copy everything except git and workflows to the SDK package dir
+        rsync -av --delete --exclude='.git' --exclude='.github/workflows' ./ sdk/package/luci-app-xray
+
+    - name: Install feeds
+      working-directory: sdk
+      run: |
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Prepare default config
+      working-directory: sdk
+      run: make defconfig
+
+    - name: Build luci-app-xray/status subpackage
+      working-directory: sdk
+      run: |
+        set -o pipefail
+        make package/luci-app-xray/status/clean V=s
+        make package/luci-app-xray/status/compile V=s 2>&1 | tee build.log
+
+    - name: Collect artifacts
+      if: always()
+      run: |
+        mkdir -p artifacts
+        find sdk/bin -name "*.ipk" -type f -exec cp {} artifacts/ \; 2>/dev/null || true
+        find sdk/build_dir -name "*.ipk" -type f -exec cp {} artifacts/ \; 2>/dev/null || true
+        ls -lah artifacts/ || echo "No ipk files found"
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: luci-app-xray-ipk
+        path: artifacts/
+        retention-days: 7
+
+    - name: Upload build log
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: sdk/build.log
+        retention-days: 7
